@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>pospal 图片生成</title>
+  <style>
+    :root{--bg:#f7f7f8;--panel:#ffffff;--line:#e5e7eb;--text:#111827;--muted:#6b7280;--accent:#7c3aed;--primary:#111827;--danger:#ef4444}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,Helvetica,Arial,sans-serif}
+    a{color:var(--accent);text-decoration:none}
+
+    /* Layout like ChatGPT/Gemini */
+    .app{display:grid;grid-template-columns:280px 1fr 320px;grid-template-rows:auto 1fr;gap:0;height:100vh}
+    header{grid-column:1/4;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;padding:10px 16px}
+    .brand{display:flex;align-items:center;gap:10px}
+    .g-badge{width:28px;height:28px;border-radius:6px;background:#2563EB;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+    .title{font-weight:600}
+    .spacer{flex:1}
+    .muted{color:var(--muted)}
+    .btn{appearance:none;border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 12px;cursor:pointer}
+    .btn.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+    .btn.accent{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .btn.small{padding:4px 8px;font-size:12px}
+
+    /* Sidebar (conversations) */
+    .sidebar{background:#fafafa;border-right:1px solid var(--line);padding:12px;overflow:auto}
+    .sidebar .row{display:flex;gap:8px;margin-bottom:12px;position:sticky;top:0;background:#fafafa;padding-bottom:10px}
+    .conv-item{padding:10px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:#fff;display:flex;align-items:center;justify-content:space-between;cursor:pointer}
+    .conv-left{display:flex;align-items:center;gap:10px;min-width:0}
+    .conv-icon{width:24px;height:24px;border-radius:6px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px}
+    .conv-text{display:flex;flex-direction:column;min-width:0}
+    .conv-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .conv-preview{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .conv-delete{opacity:0.8;border:none;background:transparent;color:var(--danger);cursor:pointer;font-size:16px;line-height:1}
+    .conv-actions{display:flex;gap:6px}
+    /* Active conversation highlighting */
+    .conv-item.active{border-color:var(--accent);background:#f5f3ff}
+
+    /* Chat area */
+    .chat{display:flex;flex-direction:column;height:calc(100vh - 56px)}
+    .messages{flex:1;overflow:auto;padding:18px}
+    .bubble{max-width:70%;padding:12px 14px;border-radius:18px;margin:6px 0;line-height:1.6;border:1px solid var(--line)}
+    .user{margin-left:auto;background:#fff;color:var(--text);border-color:var(--line)}
+    .assistant{margin-right:auto;background:#f9fafb}
+    .msg-meta{font-size:12px;color:var(--muted);margin-bottom:6px}
+    .img{max-width:640px;border-radius:12px;border:1px solid var(--line);margin-top:8px}
+    .img-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;max-width:640px}
+    .img-grid .img{width:100%;height:auto;max-width:unset}
+    .composer{border-top:1px solid var(--line);padding:12px;background:var(--panel);display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+    .composer textarea{flex:1;resize:vertical;min-height:80px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+    .topbar{display:flex;gap:8px;align-items:center;width:100%}
+    .topbar .thumbs{flex:1}
+    .thumbs{display:grid;grid-template-columns:repeat(9, 56px);gap:8px;padding:6px 0;align-items:center}
+    .thumb{position:relative;width:56px;height:56px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+    .thumb img{width:100%;height:100%;object-fit:cover}
+    .thumb .remove{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:12px;line-height:18px}
+    .thumb.active{outline:2px solid var(--accent)}
+    .send-group{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+    .send-tip{font-size:11px;color:var(--muted);opacity:0.8;filter:blur(0.2px);text-align:right}
+    .send-extra{display:flex;gap:8px;align-items:center;align-self:flex-end;color:var(--muted);font-size:12px}
+    .send-extra select{padding:2px 6px;border:1px solid var(--line);border-radius:6px;background:#fff}
+    .chips{display:none}
+    .chip{display:none}
+    .tips{display:none}
+    .ctx-toggle{display:none}
+
+    /* Right settings */
+    .settings{background:#fafafa;border-left:1px solid var(--line);padding:14px;overflow:auto}
+    .setting-item{margin-bottom:14px}
+    .setting-item label{display:block;font-size:13px;margin-bottom:6px;color:#374151}
+    input[type="range"]{width:100%;accent-color:var(--accent)}
+    .inline{display:flex;align-items:center;gap:10px}
+    .select, .input{width:100%;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#fff}
+    /* Prevent drag ghost on inputs/images */
+    .input, textarea, img { -webkit-user-drag: none; }
+
+    /* Dialog */
+    dialog{border:1px solid var(--line);border-radius:12px;padding:16px}
+    .footbar{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;background:#111827;color:#fff;border-radius:14px;padding:8px 14px;box-shadow:0 8px 24px rgba(0,0,0,.12);font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <span class="g-badge">G</span>
+        <span class="title">pospal 图片生成</span>
+      </div>
+      <span class="muted">基于 Gemini，支持文本/图片的多轮对话与编辑</span>
+      <div class="spacer"></div>
+      <span id="health" class="muted"></span>
+      <span id="user-info" class="muted" style="margin-left:8px"></span>
+      <button id="login-open" class="btn" style="margin-left:8px">登录/注册</button>
+      <button id="logout" class="btn" style="display:none;margin-left:8px">退出登录</button>
+    </header>
+
+    <!-- Left: conversations -->
+    <aside class="sidebar">
+      <div class="row">
+        <button id="new-conv" class="btn primary">新对话</button>
+        <button id="refresh-conv" class="btn">刷新</button>
+      </div>
+      <div id="conversations"></div>
+    </aside>
+
+    <!-- Center: chat -->
+    <main class="chat">
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <div class="topbar">
+          <button id="attach" class="btn">上传图片</button>
+          <div class="thumbs" id="thumbs"></div>
+        </div>
+        <input id="file" type="file" accept="image/*" multiple style="display:none" />
+        <textarea id="prompt" placeholder="输入你的提示词，支持中文/英文"></textarea>
+        <div class="send-group">
+          <button id="send" class="btn accent">发送</button>
+          <div class="send-tip">Enter 发送，Shift+Enter 换行</div>
+          <div class="send-extra">
+            <label for="img-count">张数</label>
+            <select id="img-count">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right: settings -->
+    <aside class="settings">
+      <div class="setting-item">
+        <label for="model">模型</label>
+        <select id="model" class="select">
+          <option value="gemini-2.5-flash-image-preview">gemini-2.5-flash-image-preview</option>
+          <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+          <option value="gemini-2.0-pro">gemini-2.0-pro</option>
+        </select>
+      </div>
+      <div class="setting-item">
+        <label>Temperature</label>
+        <div class="inline"><input id="temperature" type="range" min="0" max="2" step="0.1" /><span class="muted" id="tempv"></span></div>
+      </div>
+      <div class="setting-item">
+        <label>Top P</label>
+        <div class="inline"><input id="top_p" type="range" min="0" max="1" step="0.05" /><span class="muted" id="top_pv"></span></div>
+      </div>
+      <div class="setting-item">
+        <label>Top K</label>
+        <input id="top_k" class="input" type="number" placeholder="可选" />
+      </div>
+      <div class="setting-item">
+        <label>备选数 (candidate_count)</label>
+        <input id="candidate_count" class="input" type="number" placeholder="可选" />
+      </div>
+      <div class="setting-item">
+        <label>Seed</label>
+        <input id="seed" class="input" type="number" placeholder="可选" />
+      </div>
+      <div class="setting-item">
+        <label>最大输出 Tokens</label>
+        <input id="max_output_tokens" class="input" type="number" placeholder="可选" />
+      </div>
+    </aside>
+  </div>
+
+  <dialog id="auth">
+    <h3>登录 / 注册</h3>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="username" class="input" placeholder="用户名" draggable="false" ondragstart="return false" />
+      <input id="password" class="input" type="password" placeholder="密码" draggable="false" ondragstart="return false" />
+      <button id="login" class="btn primary">登录</button>
+      <button id="signup" class="btn">注册</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="footbar" style="display:none"></div>
+
+  <script>
+    const qs = s=>document.querySelector(s);
+    const toast=(t)=>{const el=qs('#toast'); el.textContent=t; el.style.display='block'; setTimeout(()=>el.style.display='none',1800)};
+
+    // Redirect from static server ports to backend to ensure cookies
+    (function(){const h=window.location.host; if(h.endsWith(':5500')||h.endsWith(':5501')){window.location.href='http://127.0.0.1:8000/'; return;}})();
+    const base = window.location.origin;
+
+    // Health
+    fetch(base+'/health').then(r=>r.ok?qs('#health').textContent='在线':qs('#health').textContent='离线').catch(()=>qs('#health').textContent='离线');
+
+    // Auth
+    const authDialog = qs('#auth');
+    const loginOpenBtn = qs('#login-open');
+    const logoutBtn = qs('#logout');
+    const userInfoEl = qs('#user-info');
+
+    async function refreshMe(){
+      const r = await fetch(base+'/me',{credentials:'include'});
+      const j = await r.json().catch(()=>({authenticated:false}));
+      if(j.authenticated){ userInfoEl.textContent='已登录: '+j.username; logoutBtn.style.display='inline-block'; loginOpenBtn.style.display='none'; if(authDialog.open) authDialog.close(); await loadConversations(); }
+      else { userInfoEl.textContent='未登录'; logoutBtn.style.display='none'; loginOpenBtn.style.display='inline-block'; convList.innerHTML=''; messagesEl.innerHTML=''; currentConv=null; }
+    }
+
+    async function loginSignup(path){
+      const username=qs('#username').value.trim(); const password=qs('#password').value;
+      if(!username||!password){toast('请输入用户名与密码'); return}
+      const r=await fetch(base+'/auth/'+path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({username,password})});
+      if(!r.ok){
+        let msg='失败';
+        try{ const data=await r.json(); if(data && data.detail) msg=data.detail; }catch(e){ const t=await r.text().catch(()=>'' ); if(t) msg=t; }
+        if(r.status===409) msg='用户名已存在，请换一个用户名';
+        if(r.status===401) msg='用户名或密码错误';
+        toast(msg);
+        return;
+      }
+      toast(path==='signup'?'注册成功，已自动登录':'登录成功');
+      await refreshMe();
+    }
+
+    // Conversations
+    const convList = qs('#conversations');
+    const messagesEl = qs('#messages');
+    let currentConv = null;
+
+    function updateActiveConvUI(){
+      const items = convList.querySelectorAll('.conv-item');
+      items.forEach(el=>{
+        if(String(el.dataset.id)===String(currentConv)) el.classList.add('active'); else el.classList.remove('active');
+      });
+    }
+
+    async function loadConversations(){
+      const r=await fetch(base+'/conversations',{credentials:'include'});
+      if(!r.ok){convList.innerHTML='<div class="muted">暂无会话或未登录</div>'; return}
+      const list=await r.json(); convList.innerHTML='';
+      for(const item of list){
+        const div=document.createElement('div'); div.className='conv-item'; div.dataset.id = item.id;
+        const left=document.createElement('div'); left.className='conv-left';
+        const icon=document.createElement('div'); icon.className='conv-icon'; icon.textContent='💬';
+        const text=document.createElement('div'); text.className='conv-text';
+        const title=document.createElement('div'); title.className='conv-title'; title.textContent=item.title||('会话 #'+item.id);
+        // inline edit on double click
+        title.ondblclick=(e)=>{
+          e.stopPropagation();
+          const input=document.createElement('input');
+          input.type='text'; input.value=title.textContent; input.className='input'; input.style.width='100%';
+          title.replaceChildren(input);
+          input.focus(); input.select();
+          const cancel=()=>{ title.textContent=item.title||('会话 #'+item.id); };
+          const commit=async()=>{
+            const newTitle=(input.value||'').trim();
+            if(!newTitle){ cancel(); return; }
+            if(newTitle===item.title){ cancel(); return; }
+            try{
+              const rr=await fetch(base+`/conversations/${item.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({title:newTitle})});
+              if(rr.ok){ item.title=newTitle; title.textContent=newTitle; toast('标题已更新'); }
+              else { toast('更新失败'); cancel(); }
+            }catch(e){ toast('更新失败'); cancel(); }
+          };
+          input.addEventListener('keydown',(ev)=>{ if(ev.key==='Enter'){ ev.preventDefault(); commit(); } else if(ev.key==='Escape'){ ev.preventDefault(); cancel(); } });
+          input.addEventListener('blur',commit);
+        };
+        const preview=document.createElement('div'); preview.className='conv-preview'; preview.textContent='加载预览...';
+        text.appendChild(title); text.appendChild(preview);
+        left.appendChild(icon); left.appendChild(text);
+        const actions=document.createElement('div'); actions.className='conv-actions';
+        const del=document.createElement('button'); del.className='conv-delete'; del.title='删除'; del.textContent='🗑';
+        del.onclick=async(e)=>{e.stopPropagation(); if(!confirm('确认删除该会话？'))return; const rr=await fetch(base+`/conversations/${item.id}`,{method:'DELETE',credentials:'include'}); if(rr.ok){toast('已删除'); if(currentConv===item.id){currentConv=null; messagesEl.innerHTML='';} await loadConversations();}};
+        actions.appendChild(del);
+        div.appendChild(left); div.appendChild(actions);
+        div.onclick=async()=>{currentConv=item.id; updateActiveConvUI(); await loadMessages(item.id)};
+        if(String(currentConv)===String(item.id)) div.classList.add('active');
+        convList.appendChild(div);
+        // fetch last message preview
+        try{const mr=await fetch(base+`/conversations/${item.id}/messages`,{credentials:'include'}); if(mr.ok){const msgs=await mr.json(); const last=msgs[msgs.length-1]; let pv=''; if(last){ if(Array.isArray(last.texts) && last.texts.length) pv=last.texts[last.texts.length-1]; else if(last.prompt) pv=last.prompt; else if(Array.isArray(last.images) && last.images.length) pv='[图片]'; } preview.textContent = pv || '暂无消息'; }}catch(e){preview.textContent='';}
+      }
+      if(currentConv==null && list.length){ currentConv=list[0].id; await loadMessages(currentConv); }
+      updateActiveConvUI();
+    }
+    async function newConversation(){
+      const title='新的会话';
+      const r=await fetch(base+'/conversations',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})});
+      if(r.status===401){ toast('请先登录'); if(!authDialog.open) authDialog.showModal(); return; }
+      if(!r.ok){toast('新建会话失败');return}
+      const j=await r.json(); currentConv=j.id; await loadConversations(); await loadMessages(currentConv);
+    }
+    async function loadMessages(convId){
+      const r=await fetch(base+`/conversations/${convId}/messages`,{credentials:'include'}); if(!r.ok){messagesEl.innerHTML='<div class="muted">无法加载消息</div>'; return}
+      const msgs=await r.json(); messagesEl.innerHTML='';
+      msgs.forEach(m=> renderMessage(m));
+    }
+
+    function renderMessage(m){
+      const role=(m.role||m.type||'assistant');
+      const wrap=document.createElement('div'); wrap.className='bubble '+(role==='user'?'user':'assistant');
+      const meta=document.createElement('div'); meta.className='msg-meta'; meta.textContent= role==='user'?'用户':'助手'; wrap.appendChild(meta);
+
+      // texts
+      let texts=[];
+      if(Array.isArray(m.texts) && m.texts.length){ texts = m.texts; }
+      else if(typeof m.text==='string' && m.text){ texts=[m.text]; }
+      else if(typeof m.prompt==='string' && m.prompt && role==='user'){ texts=[m.prompt]; }
+      if(texts.length){
+        texts.forEach(t=>{ const body=document.createElement('div'); body.textContent=t; wrap.appendChild(body); });
+      }
+
+      // images
+      let images=[];
+      if(Array.isArray(m.images) && m.images.length){ images = m.images.map(x=> (typeof x==='string' && (x.startsWith('http')||x.startsWith('data:'))? x : ('data:image/png;base64,'+x)) ); }
+      else if(m.image_url){ images=[m.image_url]; }
+      if(images.length>1){
+        const grid=document.createElement('div'); grid.className='img-grid';
+        images.forEach(src=>{
+          const cell=document.createElement('div');
+          cell.style.display='flex';
+          cell.style.flexDirection='column';
+          const img=new Image(); img.src=src; img.className='img'; img.draggable=false;
+          const actions=document.createElement('div'); actions.className='img-actions';
+          const dl=document.createElement('button'); dl.className='btn small'; dl.textContent='下载图片'; dl.onclick=()=>{const a=document.createElement('a'); a.href=img.src; a.download='generated.png'; document.body.appendChild(a); a.click(); a.remove();};
+          const cp=document.createElement('button'); cp.className='btn small'; cp.textContent='复制图片'; cp.onclick=async()=>{ try{ const resp=await fetch(img.src); const blob=await resp.blob(); const clip=new ClipboardItem({[blob.type]: blob}); await navigator.clipboard.write([clip]); toast('图片已复制到剪贴板'); }catch(err){ try{ await navigator.clipboard.writeText(img.src); toast('已复制图片链接'); }catch(e){ toast('复制失败'); } } };
+          actions.appendChild(dl); actions.appendChild(cp);
+          cell.appendChild(img); cell.appendChild(actions);
+          grid.appendChild(cell);
+        });
+        wrap.appendChild(grid);
+      }else{
+        images.forEach(src=>{
+          const img=new Image(); img.src=src; img.className='img'; img.draggable=false;
+          wrap.appendChild(img);
+          const actions=document.createElement('div'); actions.className='img-actions';
+          const dl=document.createElement('button'); dl.className='btn small'; dl.textContent='下载图片'; dl.onclick=()=>{const a=document.createElement('a'); a.href=img.src; a.download='generated.png'; document.body.appendChild(a); a.click(); a.remove();};
+          const cp=document.createElement('button'); cp.className='btn small'; cp.textContent='复制图片'; cp.onclick=async()=>{ try{ const resp=await fetch(img.src); const blob=await resp.blob(); const clip=new ClipboardItem({[blob.type]: blob}); await navigator.clipboard.write([clip]); toast('图片已复制到剪贴板'); }catch(err){ try{ await navigator.clipboard.writeText(img.src); toast('已复制图片链接'); }catch(e){ toast('复制失败'); } } };
+          actions.appendChild(dl); actions.appendChild(cp);
+          wrap.appendChild(actions);
+        });
+      }
+      messagesEl.appendChild(wrap);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    // Multi-image thumbnails handling
+    const thumbsEl = qs('#thumbs');
+    let selectedImages = [];
+    let activeImageIndex = 0;
+    function updateThumbs(){
+      thumbsEl.innerHTML='';
+      selectedImages.forEach((file, idx)=>{
+        const th=document.createElement('div'); th.className='thumb'+(idx===activeImageIndex?' active':'');
+        const img=document.createElement('img'); img.src=URL.createObjectURL(file); img.draggable=false;
+        const rm=document.createElement('button'); rm.className='remove'; rm.textContent='×'; rm.onclick=(e)=>{e.stopPropagation(); selectedImages.splice(idx,1); if(activeImageIndex>=selectedImages.length){activeImageIndex=Math.max(0, selectedImages.length-1);} updateThumbs();};
+        th.onclick=()=>{activeImageIndex=idx; updateThumbs();};
+        th.append(img, rm);
+        thumbsEl.appendChild(th);
+      });
+    }
+
+    qs('#attach').onclick=()=>qs('#file').click();
+    qs('#file').addEventListener('change',(e)=>{
+      const files=[...e.target.files];
+      if(selectedImages.length + files.length > 9){toast('最多可选择9张图片');}
+      const allowed = files.slice(0, Math.max(0, 9 - selectedImages.length));
+      selectedImages.push(...allowed);
+      updateThumbs();
+      qs('#file').value='';
+    });
+
+    // 复制最新一张图片按钮（若按钮存在）
+    const copyBtn = qs('#copy-img');
+    if(copyBtn){
+      copyBtn.onclick=async()=>{
+        const imgs=[...messagesEl.querySelectorAll('img.img')];
+        const last=imgs[imgs.length-1];
+        if(!last){ toast('暂无可复制的图片'); return; }
+        try{
+          const resp=await fetch(last.src);
+          const blob=await resp.blob();
+          const clip = new ClipboardItem({[blob.type]: blob});
+          await navigator.clipboard.write([clip]);
+          toast('图片已复制到剪贴板');
+        }catch(err){
+          try{
+            await navigator.clipboard.writeText(last.src);
+            toast('已复制图片链接');
+          }catch(e){
+            toast('复制失败');
+          }
+        }
+      };
+    }
+    // Keyboard send (Enter 发送，Shift+Enter 换行)
+       const promptEl = qs('#prompt');
+       promptEl.addEventListener('keydown',(e)=>{
+         if(e.key==='Enter' && !e.shiftKey && !e.isComposing){
+           e.preventDefault();
+           qs('#send').click();
+           return;
+         }
+         // Shift+Enter 默认换行
+       });
+       // Settings values display
+       const updateRange=(id,vid)=>{const el=qs('#'+id), ve=qs('#'+vid); const fn=()=>ve.textContent=el.value; el.addEventListener('input',fn); fn();};
+       updateRange('temperature','tempv');
+       updateRange('top_p','top_pv');
+       
+       // Sync mini image count with settings candidate_count
+       const imgCountEl = qs('#img-count');
+       const ccEl = qs('#candidate_count');
+       function syncImgCountFromSettings(){ const v = parseInt(ccEl.value||'1'); imgCountEl.value = String(Math.max(1, Math.min(6, isNaN(v)?1:v))); }
+       function syncSettingsFromImgCount(){ ccEl.value = imgCountEl.value; }
+       imgCountEl.addEventListener('change', syncSettingsFromImgCount);
+       ccEl.addEventListener('input', syncImgCountFromSettings);
+       // initialize
+       syncImgCountFromSettings();
+       
+       qs('#send').onclick=async()=>{
+         const prompt=promptEl.value.trim();
+         // 立即清空输入框
+         promptEl.value='';
+         const hasImages = selectedImages.length>0;
+         if(!prompt && !hasImages){toast('请输入提示词或选择图片'); return}
+         if(!currentConv){await newConversation(); if(!currentConv) return;}
+         renderMessage({role:'user',text:prompt});
+         try{
+           if(hasImages){
+             const fd=new FormData();
+             // append all selected images as 'files'
+             selectedImages.forEach(f=> fd.append('files', f));
+             fd.append('prompt', prompt||'');
+             const model=qs('#model').value; if(model) fd.append('model', model);
+             const temperature=qs('#temperature').value; if(temperature) fd.append('temperature', temperature);
+             const top_p=qs('#top_p').value; if(top_p) fd.append('top_p', top_p);
+             const top_k=qs('#top_k').value; if(top_k) fd.append('top_k', top_k);
+             const candidate_count=qs('#candidate_count').value; if(candidate_count) fd.append('candidate_count', candidate_count);
+             const seed=qs('#seed').value; if(seed) fd.append('seed', seed);
+             const max_output_tokens=qs('#max_output_tokens').value; if(max_output_tokens) fd.append('max_output_tokens', max_output_tokens);
+             if(currentConv) fd.append('conv_id', String(currentConv));
+             const r=await fetch(base+'/v1/edit',{method:'POST',credentials:'include',body:fd}); if(!r.ok) throw new Error(await r.text());
+             const j=await r.json();
+             // render assistant
+             if(Array.isArray(j.texts) && j.texts.length){ renderMessage({role:'assistant', texts:j.texts}); }
+             if(Array.isArray(j.images) && j.images.length){ renderMessage({role:'assistant', images: j.images}); }
+             // 发送成功后清空已选择的图片与缩略图
+             selectedImages = [];
+             activeImageIndex = 0;
+             updateThumbs();
+             const fileInput = qs('#file'); if(fileInput) fileInput.value='';
+           }else{
+             // JSON payload aligned with backend schema (no options wrapper)
+             const payload={
+               prompt,
+               model: qs('#model').value || undefined,
+               temperature: qs('#temperature').value? parseFloat(qs('#temperature').value): undefined,
+               top_p: qs('#top_p').value? parseFloat(qs('#top_p').value): undefined,
+               top_k: qs('#top_k').value? parseInt(qs('#top_k').value): undefined,
+               candidate_count: qs('#candidate_count').value? parseInt(qs('#candidate_count').value): undefined,
+               seed: qs('#seed').value? parseInt(qs('#seed').value): undefined,
+               max_output_tokens: qs('#max_output_tokens').value? parseInt(qs('#max_output_tokens').value): undefined,
+               conv_id: currentConv? String(currentConv): undefined
+             };
+             const r=await fetch(base+'/v1/generate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(payload)}); if(!r.ok) throw new Error(await r.text());
+             const j=await r.json();
+             if(Array.isArray(j.texts) && j.texts.length){ renderMessage({role:'assistant', texts:j.texts}); }
+             if(Array.isArray(j.images) && j.images.length){ renderMessage({role:'assistant', images: j.images}); }
+           }
+           // 不再在此处清空输入框（已在点击时清空）
+          }catch(err){ toast('发送失败'); console.error(err); }
+         };
+       // Buttons
+       qs('#login-open').onclick=()=>authDialog.showModal();
+       qs('#login').onclick=()=>loginSignup('login');
+       qs('#signup').onclick=()=>loginSignup('signup');
+       qs('#logout').onclick=async()=>{await fetch(base+'/auth/logout',{method:'POST',credentials:'include'}); await refreshMe();};
+       qs('#new-conv').onclick=newConversation;
+       qs('#refresh-conv').onclick=loadConversations;
+       
+       refreshMe();
+     </script>
+   </body>
+   </html>

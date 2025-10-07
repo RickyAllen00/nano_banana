@@ -1,0 +1,21 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# logs
+logs/
+*.log
+
+# databases and generated artifacts
+app.db
+*.db
+generated_image.png
+
+# environment and OS junk
+.env
+.DS_Store
+Thumbs.db
+
+# node
+node_modules/

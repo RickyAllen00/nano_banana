@@ -30,10 +30,15 @@ client = genai.Client(api_key=API_KEY)
 
 # FastAPI app
 app = FastAPI(title="Nano Banana Image Hub", description="Proxy endpoints for Gemini image generation and editing")
-ALLOWED_ORIGINS = [
-    "http://localhost:5500",
-    "http://127.0.0.1:5500",
-]
+# Allow origins from environment (comma-separated), fallback to localhost dev ports
+_origins_env = os.getenv("ALLOWED_ORIGINS")
+if _origins_env:
+    ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
+else:
+    ALLOWED_ORIGINS = [
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+    ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -46,7 +51,8 @@ app.add_middleware(
 # Auth & DB Utilities
 # =====================
 BASE_DIR = os.path.dirname(__file__)
-DB_PATH = os.path.join(BASE_DIR, "app.db")
+# Allow overriding DB path via environment for cloud persistent disks
+DB_PATH = os.getenv("DB_PATH") or os.path.join(BASE_DIR, "app.db")
 SESSION_COOKIE = "session"
 SESSION_TTL_DAYS = 7
 

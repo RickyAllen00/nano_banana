@@ -204,3 +204,70 @@ print(generate("a minimal banana logo in flat style"))
 ## 开发提示
 - 修改前端后可直接刷新浏览器；后端接口变更需重启（或 `--reload` 热重载）。
 - 若要扩展 API，建议沿用当前的 Pydantic 结构与日志记录方式，并考虑在会话内持久化消息以便前端展示。
+## NAS + Docker + ngrok 快速映射公网地址
+
+如果你有一台 NAS（如群晖/Synology），可以使用 Docker + ngrok 将后端快速暴露到公网用于内测体验。
+
+### 前提
+- 注册 ngrok 账号并获取 `NGROK_AUTHTOKEN`。
+- 在 NAS 上安装 Docker（或启用 Docker 套件）。
+
+### 步骤（推荐使用 docker compose）
+1. 在项目根目录创建 `.env`，写入：
+   - `GOOGLE_API_KEY=你的服务端API密钥`（或 `GEMINI_API_KEY`）
+   - `NGROK_AUTHTOKEN=你的ngrok令牌`
+   - 可选：`DEFAULT_MODEL=gemini-1.5-flash`，以及 `GENAI_MAX_CONCURRENT=1`、`GENAI_MIN_INTERVAL_MS=500`。
+2. 启动：
+   - `docker compose -f docker-compose.ngrok.yml up -d`
+3. 查看公网地址：
+   - `docker logs -f ngrok-tunnel`，日志中会显示 `Forwarding https://xxxx.ngrok.io -> api:8000`。
+4. 验证：
+   - `curl https://xxxx.ngrok.io/health`
+   - `curl -X POST https://xxxx.ngrok.io/v1/generate -H "Content-Type: application/json" -d '{"prompt":"a yellow banana","model":"gemini-1.5-flash","candidate_count":1}'`
+
+> 提示：`docker-compose.ngrok.yml` 已包含持久化卷 `/data` 用于 SQLite；如仅做无状态体验，可忽略数据库持久化。
+
+### 安全与额度建议
+- 使用“服务器端 API Key”（应用限制为 None，仅限制到 Generative Language API）；避免 Referer 限制导致 403。
+- 在云端/公网环境建议开启服务端限流与重试（见上文环境变量），并控制 `candidate_count=1`。
+- 如需额外保护，可在隧道前增加 Basic Auth（通过反向代理如 Caddy/Nginx 实现），或使用 IP 白名单。
+
+### 可替代方案
+- Cloudflare Tunnel：免端口映射，配置自定义域更方便。可在 NAS 上安装 `cloudflared`，命令示例：
+  - `cloudflared tunnel --url http://127.0.0.1:8000`（或在 Compose 内指向 `api:8000`）。
+  - 需要登录 Cloudflare 账号并在后台设置域名与隧道。
+- Tailscale Funnel：在装有 Tailscale 的机器上启用 Funnel 暴露本地端口，适合个人/小团队快速分享。
+- Railway/Fly.io：与 Render 类似的“一键部署 + 公网域名”平台，可直接使用本仓库的 Dockerfile。
+## NAS + 节点小宝内网穿透部署（4041 端口）
+
+适合已有 NAS 并安装了“节点小宝”的场景，通过 Docker 在 NAS 上运行服务并由“节点小宝”将 4041 端口穿透到公网。
+
+### 准备
+- 在项目根目录创建 `.env`：
+  - `GOOGLE_API_KEY=你的服务端API密钥`（或 `GEMINI_API_KEY`）
+  - 可选：`DEFAULT_MODEL=gemini-1.5-flash`、`GENAI_MAX_CONCURRENT=1`、`GENAI_MIN_INTERVAL_MS=500`
+- 注意：`.env` 中的 `NGROK_AUTHTOKEN` 与本方案无关（给 ngrok 使用），可留空。
+
+### 在 NAS 上启动到 4041 端口
+- 运行：`docker compose -f docker-compose.nas.yml up -d`
+- 查看容器：`docker ps`（确认 `nano-banana-api` 映射为 `0.0.0.0:4041->8000/tcp`）
+- 局域网自测：`curl http://<NAS内网IP>:4041/health`
+
+### 在“节点小宝”配置内网穿透
+- 新建 HTTP 穿透服务：
+  - 本地目标：`http://<NAS内网IP>:4041`
+  - 路由路径：`/`（根路径透传，避免子路径导致接口 404）
+  - 健康检查：`/health`（周期探测，便于监控）
+  - Host 头：保持原样（或开启保留 Host 选项），避免某些代理对主机头处理导致不兼容。
+  - TLS：视节点小宝是否支持边缘 TLS 终止；如开启 HTTPS，确保反向代理到后端为 HTTP。
+- 保存并启用后，记下公网访问域名，例如：`https://your-node-xiaobao-domain/...`
+
+### 公网验证
+- 访问健康检查：`curl https://<你的公网域名>/health`
+- 生成接口：
+  - `curl -X POST https://<你的公网域名>/v1/generate -H "Content-Type: application/json" -d '{"prompt":"a yellow banana","model":"gemini-1.5-flash","candidate_count":1}'`
+
+### 常见问题
+- 403 PERMISSION_DENIED（Referer 为空被拒绝）：请使用“服务器端 API Key”（应用限制 None，仅限制到 Generative Language API）。
+- 429 RESOURCE_EXHAUSTED：降低并发与候选数，启用服务端限流与指数退避（见上文环境变量）。
+- 子路径穿透导致 404：请将节点小宝的路径设置为 `/` 并直通转发，不要增加额外前缀。

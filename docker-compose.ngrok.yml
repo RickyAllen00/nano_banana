@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  api:
+    build: .
+    container_name: nano-banana-api
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gemini-1.5-flash}
+      - DB_PATH=/data/app.db
+      - GENAI_MAX_CONCURRENT=${GENAI_MAX_CONCURRENT:-1}
+      - GENAI_MIN_INTERVAL_MS=${GENAI_MIN_INTERVAL_MS:-500}
+      - GENAI_MAX_RETRIES=${GENAI_MAX_RETRIES:-3}
+      - GENAI_BACKOFF_MS=${GENAI_BACKOFF_MS:-500}
+      - GENAI_FORCE_SINGLE_ON_RETRY=${GENAI_FORCE_SINGLE_ON_RETRY:-1}
+    volumes:
+      - data:/data
+    ports:
+      - "8000:8000"  # 可选：便于在局域网内直接访问
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ngrok-tunnel
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    depends_on:
+      - api
+    command: ["http", "api:8000"]
+    # 如需绑定自定义域（付费）：
+    # command: ["http", "--hostname", "your-subdomain.ngrok.app", "api:8000"]
+
+volumes:
+  data:

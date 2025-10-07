@@ -5,9 +5,7 @@ services:
     build: .
     container_name: nano-banana-api
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - DEFAULT_MODEL=${DEFAULT_MODEL:-gemini-1.5-flash}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gemini-2.5-flash-image-preview}
       - DB_PATH=/data/app.db
       - GENAI_MAX_CONCURRENT=${GENAI_MAX_CONCURRENT:-1}
       - GENAI_MIN_INTERVAL_MS=${GENAI_MIN_INTERVAL_MS:-500}

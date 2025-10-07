@@ -1,5 +1,7 @@
 # Nano Banana
 
+提示：已移除 Streamlit 演示与 Render 部署文件（`streamlit_app.py` 与 `render.yaml`）。如需使用这两者，请从历史提交恢复或在删除前保留本地副本。
+
 一个基于 Google GenAI（Gemini）的图片生成与编辑小应用，后端使用 FastAPI，前端为纯静态页面，另附 Streamlit 演示页面与独立脚本示例。
 
 ## 架构概览
@@ -20,7 +22,7 @@
 ## 环境依赖
 - Python 3.10+（推荐 3.10 或更高）
 - 依赖见 `requirements.txt`：
-  - `google-genai`、`streamlit`、`sqlalchemy`、`pillow`、`python-dotenv`
+  - `google-genai`、`fastapi`、`python-dotenv`、`python-multipart`
 - 运行后端建议安装：`uvicorn`
 
 ## 准备工作
@@ -45,8 +47,7 @@
   - 根路径 `/` 会返回 `public/index.html` 前端页面。
   - 如从静态服务器（如 `:5500`）打开 `index.html`，页面会自动跳转到后端地址以确保 Cookie 生效。
 
-## 启动 Streamlit 演示
-- 命令：`streamlit run streamlit_app.py`
+<!-- 已移除 Streamlit 演示，若需要可参考历史提交自行恢复 -->
 
 ### 云端部署与配额速率提示
 
@@ -55,34 +56,32 @@
 - 进一步在云端开启服务端限流以规避高并发触发：`GENAI_MAX_CONCURRENT`（默认 2）、`GENAI_MIN_INTERVAL_MS`（默认 300ms）。
 - 可通过设置 `DEFAULT_MODEL` 为更轻量的模型变体、将 `candidate_count` 设为 `1` 来降低开销。
 - 云端请使用与本地相同的 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`，并确保放在服务的环境变量中（不要提交到仓库）。
+- 云端请使用与本地相同的 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`，并确保放在服务的环境变量中（不要提交到仓库）。
+- API Key：优先从 `st.secrets['GOOGLE_API_KEY']` 获取，其次读取环境变量 `GOOGLE_API_KEY / GEMINI_API_KEY`。
 - 首次运行会在项目目录创建（或使用）`app.db`。
 - API Key：优先从 `st.secrets['GOOGLE_API_KEY']` 获取，其次读取环境变量 `GOOGLE_API_KEY / GEMINI_API_KEY`。
 - 功能：输入提示词生成图片、保存历史、下载与复制图片到剪贴板。
 
-> Render 部署提示：`render.yaml` 的 `healthCheckPath` 已设为 `/health`，与后端路由一致，避免误判不健康导致容器频繁重启。
-
-### 常见错误与修复
+<!-- 已移除 Render 部署配置 render.yaml，如需云端部署可按照 Dockerfile 或自选平台流程进行。 -->
+- 403 PERMISSION_DENIED（Requests from referer <empty> are blocked）：
+  - 原因：当前 `GOOGLE_API_KEY`/`GEMINI_API_KEY` 在 Google 控制台设置了“应用限制：HTTP 引用者（Website）”。服务端发起的请求 Referer 为空，会被拒绝。
+  - 处理：在 Google Cloud Console 或 AI Studio 创建一个“应用限制：None”的服务器端 API Key；仅保留“API 限制：Generative Language API”。将该 Key 配置到云端环境变量（Render 仪表盘）。
+- 429 RESOURCE_EXHAUSTED：
+  - 可能由模型的每分钟/每天限额触发，或并发突发导致；建议使用闪系列模型（`gemini-1.5-flash` 或 `gemini-2.0-flash-lite`）、将 `candidate_count=1`，并在云端启用 `GENAI_MAX_CONCURRENT / GENAI_MIN_INTERVAL_MS`。
 - 403 PERMISSION_DENIED（Requests from referer <empty> are blocked）：
   - 原因：当前 `GOOGLE_API_KEY`/`GEMINI_API_KEY` 在 Google 控制台设置了“应用限制：HTTP 引用者（Website）”。服务端发起的请求 Referer 为空，会被拒绝。
   - 处理：在 Google Cloud Console 或 AI Studio 创建一个“应用限制：None”的服务器端 API Key；仅保留“API 限制：Generative Language API”。将该 Key 配置到云端环境变量（Render 仪表盘）。
 - 429 RESOURCE_EXHAUSTED：
   - 可能由模型的每分钟/每天限额触发，或并发突发导致；建议使用闪系列模型（`gemini-1.5-flash` 或 `gemini-2.0-flash-lite`）、将 `candidate_count=1`，并在云端启用 `GENAI_MAX_CONCURRENT / GENAI_MIN_INTERVAL_MS`。
 
-## 仅图片生成服务部署与调用
-
-你可以只部署并使用图片生成/编辑接口，而不启用会话或对话功能。当前后端的生成接口不需要登录；只有在提供 `conv_id` 且用户登录时才会写入历史记录。
-
-### 推荐部署（Render）
 - 必填环境变量：`GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）。
 - 可选：`DEFAULT_MODEL`（建议 `gemini-1.5-flash` 或 `gemini-2.0-flash-lite`）。
-- 限流与重试（建议在云端开启）：
-  - `GENAI_MAX_CONCURRENT=1..2`
-  - `GENAI_MIN_INTERVAL_MS=300..500`
-  - `GENAI_MAX_RETRIES=3`、`GENAI_BACKOFF_MS=500`、`GENAI_FORCE_SINGLE_ON_RETRY=1`
-- 挂载磁盘（选）：`DB_PATH=/data/app.db`（若不使用会话/历史可不必严格持久化）。
+你可以只部署并使用图片生成/编辑接口，而不启用会话或对话功能。当前后端的生成接口不需要登录；只有在提供 `conv_id` 且用户登录时才会写入历史记录。
+
+<!-- 已移除 Render 推荐部署章节，保留 Docker 与 ngrok/NAS 方案 -->
 
 ### HTTP API（仅生成/编辑）
-- `POST /v1/generate`（JSON）：
+  - 字段：`prompt`、`files`（1 张或多张图片）、以及可选生成参数。
   - Body：`{ prompt, model?, temperature?, top_p?, top_k?, candidate_count?, seed?, max_output_tokens? }`
   - 返回：`{ images: [base64 PNG], texts: [string] }`
   - 说明：`candidate_count` 会被限制在 `1..6`；不需要认证。
@@ -94,17 +93,15 @@
 ### curl 示例
 
 ```bash
-# 生成（单次）
-curl -X POST "https://<your-render-domain>/v1/generate" \
-  -H "Content-Type: application/json" \
+    "model": "gemini-1.5-flash",
+    "candidate_count": 1
   -d '{
     "prompt": "a yellow banana wearing sunglasses, 4k, photorealistic",
     "model": "gemini-1.5-flash",
     "candidate_count": 1
   }'
 
-# 编辑（上传图片 + 文本提示）
-curl -X POST "https://<your-render-domain>/v1/edit" \
+  -F "model=gemini-1.5-flash" \
   -H "Accept: application/json" \
   -F "prompt=make the banana purple with neon glow" \
   -F "model=gemini-1.5-flash" \
@@ -115,12 +112,11 @@ curl -X POST "https://<your-render-domain>/v1/edit" \
 
 ```python
 import requests
-
+def generate(prompt: str, model="gemini-1.5-flash"):
 BASE = "https://<your-render-domain>"
 
 def generate(prompt: str, model="gemini-1.5-flash"):
     r = requests.post(f"{BASE}/v1/generate", json={
-        "prompt": prompt,
         "model": model,
         "candidate_count": 1,
     }, timeout=60)
@@ -132,10 +128,10 @@ def generate(prompt: str, model="gemini-1.5-flash"):
         with open("out.png", "wb") as f:
             import base64
             f.write(base64.b64decode(img_b64))
-    return data
+def edit(prompt: str, img_path: str, model="gemini-1.5-flash"):
 
 def edit(prompt: str, img_path: str, model="gemini-1.5-flash"):
-    with open(img_path, "rb") as fp:
+        data = {"prompt": prompt, "model": model}
         files = {"files": ("image.png", fp, "image/png")}
         data = {"prompt": prompt, "model": model}
         r = requests.post(f"{BASE}/v1/edit", files=files, data=data, timeout=120)
@@ -150,7 +146,7 @@ print(generate("a minimal banana logo in flat style"))
 - 在云端启用上述限流与重试环境变量，降低突发并发导致的 429 概率。
 - 无需会话/历史时，不传 `conv_id`；认证端点与会话端点可忽略。
 
-## 独立脚本示例（nano_api.py）
+- 行为：调用 Gemini 模型，生成一张图片并保存为 `generated_image.png`，若响应包含文本也会打印到终端。
 - 命令：`python nano_api.py`
 - 行为：调用 Gemini 模型，生成一张图片并保存为 `generated_image.png`，若响应包含文本也会打印到终端。
 
@@ -172,7 +168,7 @@ print(generate("a minimal banana logo in flat style"))
 - `PATCH /conversations/{conv_id}`：更新标题。
 - `DELETE /conversations/{conv_id}`：删除会话。
 
-生成与编辑：
+  - Body：`{ prompt, model?, temperature?, top_p?, top_k?, candidate_count?, seed?, max_output_tokens?, conv_id? }`
 - `POST /v1/generate`（JSON）：
   - Body：`{ prompt, model?, temperature?, top_p?, top_k?, candidate_count?, seed?, max_output_tokens?, conv_id? }`
   - 返回：`{ images: [base64 PNG], texts: [string] }`
@@ -186,7 +182,7 @@ print(generate("a minimal banana logo in flat style"))
 ## 前端使用说明
 - 页面顶部可登录/注册；登录后可创建与管理会话。
 - 中部聊天区域支持：
-  - 仅文本提示词 → 走 `/v1/generate`。
+- 右侧设置栏可调 `model`、`temperature`、`top_p` 等生成参数。
   - 上传图片 + 文本提示词 → 走 `/v1/edit`（或多图合成）。
 - 右侧设置栏可调 `model`、`temperature`、`top_p` 等生成参数。
 - 发送区域的“张数”（`candidate_count`）会被后端限制在 1~6。
@@ -194,7 +190,7 @@ print(generate("a minimal banana logo in flat style"))
 ## 日志与数据
 - 后端：`logs/app.log` 按天滚动，保留 7 天。
 - 数据库：默认使用本地 SQLite `app.db`；Streamlit 演示支持配置 `DATABASE_URL` 指向 Postgres 等。
-
+- 提示“缺少 API Key”：请在 `.env` 或系统环境设置 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`。
 ## 常见问题（FAQ）
 - 提示“缺少 API Key”：请在 `.env` 或系统环境设置 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`。
 - `uvicorn` 未安装：运行后端前执行 `pip install uvicorn`。

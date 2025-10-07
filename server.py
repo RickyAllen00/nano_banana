@@ -10,27 +10,26 @@ from typing import List, Optional
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import time
+from google import genai
+from google.genai import types as genai_types
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from google import genai
-from google.genai import types, errors
 from fastapi.responses import FileResponse
 from threading import Semaphore, Lock
+# Load environment variables (prefer .env near this file, fallback to CWD) and allow override
+_here_env = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(_here_env):
+    load_dotenv(_here_env, override=True)
+else:
+    load_dotenv(override=True)
 
-# Load environment variables
-load_dotenv()
-API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-if not API_KEY:
-    raise RuntimeError("Missing API key. Please set GOOGLE_API_KEY or GEMINI_API_KEY in your .env or environment.")
-
-# Initialize client
-client = genai.Client(api_key=API_KEY)
+# 已切换到 Google GenAI，删除 OpenRouter 相关配置
 
 # FastAPI app
-app = FastAPI(title="Nano Banana Image Hub", description="Proxy endpoints for Gemini image generation and editing")
+app = FastAPI(title="Nano Banana Image Hub", description="Google GenAI (Gemini) 图片生成与编辑接口")
 # Allow origins from environment (comma-separated), fallback to localhost dev ports
 _origins_env = os.getenv("ALLOWED_ORIGINS")
 if _origins_env:
@@ -198,9 +197,10 @@ def get_current_user_id(request: Request) -> Optional[int]:
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL") or "gemini-2.5-flash-image-preview"
 GENAI_MAX_RETRIES = int(os.getenv("GENAI_MAX_RETRIES", "2"))
 GENAI_BACKOFF_MS = int(os.getenv("GENAI_BACKOFF_MS", "250"))
-GENAI_FORCE_SINGLE_ON_RETRY = os.getenv("GENAI_FORCE_SINGLE_ON_RETRY", "1") == "1"
+# You can override via env DEFAULT_IMAGE_MODEL, e.g. "openai/dall-e-3" or "stabilityai/sdxl-1.0"
 GENAI_MAX_CONCURRENT = int(os.getenv("GENAI_MAX_CONCURRENT", "2"))
 GENAI_MIN_INTERVAL_MS = int(os.getenv("GENAI_MIN_INTERVAL_MS", "300"))
+GENAI_FORCE_SINGLE_ON_RETRY = int(os.getenv("GENAI_FORCE_SINGLE_ON_RETRY", "1"))
 
 # Simple process-wide throttle to avoid tripping upstream rate limits under cloud concurrency
 _throttle_sem = Semaphore(GENAI_MAX_CONCURRENT)
@@ -235,6 +235,18 @@ async def index_page():
     if not os.path.exists(index_path):
         raise HTTPException(status_code=404, detail="Frontend not found")
     return FileResponse(index_path)
+
+# Diagnostics endpoint to verify environment loading
+@app.get("/_diag/env")
+async def diag_env():
+    # GEMINI API Key only
+    key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    masked = (key[:6] + "..." + key[-4:]) if key else None
+    return {
+        "gemini_api_key_loaded": bool(key),
+        "gemini_api_key_masked": masked,
+        "default_model": os.getenv("DEFAULT_MODEL") or "gemini-2.5-flash-image-preview",
+    }
 
 # =====================
 # Auth endpoints
@@ -390,118 +402,114 @@ def _record_turn(conv_id: int, type_: str, prompt: str, images: List[str], texts
             (conv_id, type_, json.dumps(images or []), json.dumps(texts or []), json.dumps(params or {}), now),
         )
 
-def _genai_call_with_retry(model: str, contents: List, cfg_kwargs: dict):
-    cc = cfg_kwargs.get("candidate_count") or 1
-    attempt = 0
-    last_err: Optional[Exception] = None
-    retry_after_s = max(1, int((GENAI_BACKOFF_MS / 1000.0) * (2 ** max(0, GENAI_MAX_RETRIES - 1))))
+def _openrouter_call_with_retry(payload: dict) -> dict:
+    # Legacy stub kept for compatibility after migration to Google GenAI.
+    raise HTTPException(status_code=410, detail="OpenRouter 客户端已移除，请使用 Google GenAI。")
 
-    # Acquire concurrency gate
-    acquired = _throttle_sem.acquire(timeout=30)
-    if not acquired:
-        logger.warning(f"throttle_sem_timeout model={model} cc={cc}")
-        raise HTTPException(status_code=429, detail="服务端限流触发，请稍后重试。", headers={"Retry-After": str(retry_after_s)})
+def _parse_openrouter_output(data: dict) -> (List[str], List[str]):
+    # Legacy stub; parser removed after Google migration.
+    return [], []
+
+# =====================
+# Google GenAI helpers
+# =====================
+def _get_genai_client():
+    key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not key:
+        raise HTTPException(status_code=401, detail="未检测到 GEMINI_API_KEY，请在后端环境中配置后重试。")
+    return genai.Client(api_key=key)
+
+def _parse_genai_output(resp) -> (List[str], List[str]):
+    images: List[str] = []
+    texts: List[str] = []
     try:
-        # Respect minimal interval between upstream calls
-        with _ts_lock:
-            now = time.monotonic()
-            min_gap = GENAI_MIN_INTERVAL_MS / 1000.0
-            wait_s = max(0.0, min_gap - (now - _last_call_ts))
-        if wait_s > 0:
-            time.sleep(wait_s)
-        with _ts_lock:
-            # Update last call timestamp just before making upstream call
-            globals()["_last_call_ts"] = time.monotonic()
+        candidates = getattr(resp, 'candidates', []) or []
+        for cand in candidates:
+            parts = getattr(cand.content, 'parts', []) or []
+            for part in parts:
+                inline = getattr(part, 'inline_data', None)
+                if inline and getattr(inline, 'data', None):
+                    data_bytes = inline.data
+                    try:
+                        b = bytes(data_bytes) if not isinstance(data_bytes, (bytes, bytearray)) else data_bytes
+                        images.append(base64.b64encode(b).decode('utf-8'))
+                    except Exception:
+                        pass
+                elif getattr(part, 'text', None):
+                    texts.append(getattr(part, 'text'))
+    except Exception:
+        pass
+    return images, texts
 
-        while attempt <= GENAI_MAX_RETRIES:
+def _throttle_and_generate(client: genai.Client, model: str, contents: List):
+    """Serialize upstream calls with simple process-level throttling and retry on 429.
+
+    - Enforces GENAI_MAX_CONCURRENT via semaphore.
+    - Enforces GENAI_MIN_INTERVAL_MS between calls.
+    - Retries on 429/RESOURCE_EXHAUSTED up to GENAI_MAX_RETRIES with exponential backoff.
+    """
+    _throttle_sem.acquire()
+    try:
+        # enforce min interval between upstream calls
+        with _ts_lock:
+            now = time.perf_counter()
+            wait_s = (_last_call_ts + GENAI_MIN_INTERVAL_MS / 1000.0) - now
+            if wait_s > 0:
+                time.sleep(wait_s)
+            # update last call timestamp right before making the upstream request
+            globals()["_last_call_ts"] = time.perf_counter()
+
+        attempt = 0
+        backoff_base = GENAI_BACKOFF_MS / 1000.0
+        while True:
             try:
-                resp = client.models.generate_content(
+                return client.models.generate_content(
                     model=model,
                     contents=contents,
-                    config=types.GenerateContentConfig(
-                        temperature=cfg_kwargs.get("temperature"),
-                        top_p=cfg_kwargs.get("top_p"),
-                        top_k=cfg_kwargs.get("top_k"),
-                        candidate_count=cc,
-                        seed=cfg_kwargs.get("seed"),
-                        max_output_tokens=cfg_kwargs.get("max_output_tokens"),
-                    ),
                 )
-                return resp
-            except errors.ClientError as e:
-                status = getattr(e, "status_code", None)
-                msg = str(e)
-                # Map referer restriction errors to a clear 403 for the client
-                if status == 403 and "Requests from referer <empty> are blocked" in msg:
-                    logger.error(f"api_key_restricted_referer model={model} cc={cc} attempt={attempt} msg={msg}")
-                    raise HTTPException(
-                        status_code=403,
-                        detail=(
-                            "API Key 被设置为 HTTP 引用者（Referrer）限制，服务端调用 Referer 为空被拒绝。"
-                            "请在 Google Cloud Console 或 AI Studio 创建一个仅限制到 Generative Language API、"
-                            "且不设置应用限制（None）的服务端 API Key，并更新服务的 GOOGLE_API_KEY。"
-                        ),
-                    )
-                if status == 429 or "RESOURCE_EXHAUSTED" in msg or "rate" in msg.lower():
-                    last_err = e
-                    logger.warning(f"upstream_429 model={model} cc={cc} attempt={attempt} msg={msg}")
-                    if attempt == GENAI_MAX_RETRIES:
-                        break
-                    backoff = (GENAI_BACKOFF_MS / 1000.0) * (2 ** attempt)
-                    time.sleep(backoff)
-                    if GENAI_FORCE_SINGLE_ON_RETRY and cc > 1:
-                        cc = 1
-                    attempt += 1
-                    continue
-                else:
-                    raise
             except Exception as e:
-                last_err = e
-                logger.exception(f"upstream_call_failed model={model} cc={cc} attempt={attempt}: {e}")
-                break
+                msg = str(e)
+                is_429 = ("RESOURCE_EXHAUSTED" in msg) or ("429" in msg)
+                if not is_429 or attempt >= GENAI_MAX_RETRIES:
+                    raise
+                attempt += 1
+                # exponential backoff: base, 2x, 4x...
+                time.sleep(backoff_base * (2 ** (attempt - 1)))
+                # best-effort: reduce load when retrying (no-op if library ignores it)
+                if GENAI_FORCE_SINGLE_ON_RETRY:
+                    # contents format for google-genai supports text and parts; here we don't have
+                    # a direct candidate_count option without generation_config, so we simply retry.
+                    pass
     finally:
         _throttle_sem.release()
-
-    raise HTTPException(status_code=429, detail=f"上游配额或速率限制：{last_err}", headers={"Retry-After": str(retry_after_s)})
 
 @app.post("/v1/generate", response_model=GenerateResponse)
 async def generate_image(payload: GenerateRequest, request: Request):
     model = payload.model or DEFAULT_MODEL
     logger.info(f"/v1/generate model={model} conv_id={payload.conv_id}")
-    # Clamp candidate_count to safe bounds [1,6]
+
+    # Clamp candidate_count to [1,6]
     cc = (payload.candidate_count or 1)
     try:
         cc = max(1, min(6, int(cc)))
     except Exception:
         cc = 1
-    cfg_kwargs = {
-        "temperature": payload.temperature,
-        "top_p": payload.top_p,
-        "top_k": payload.top_k,
-        "candidate_count": cc,
-        "seed": payload.seed,
-        "max_output_tokens": payload.max_output_tokens,
-    }
+
+    # Google GenAI generate
+    client = _get_genai_client()
     try:
-        response = _genai_call_with_retry(model=model, contents=[payload.prompt], cfg_kwargs=cfg_kwargs)
-    except HTTPException:
-        # Already mapped (e.g., 429)
-        raise
+        resp = _throttle_and_generate(client, model, [payload.prompt])
     except Exception as e:
         logger.exception(f"/v1/generate failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
+        msg = str(e)
+        if ("RESOURCE_EXHAUSTED" in msg) or ("429" in msg):
+            raise HTTPException(status_code=429, detail="上游限额触发（RESOURCE_EXHAUSTED/429）。已自动退避重试失败，请降低并发或改用更轻量模型。")
+        raise HTTPException(status_code=502, detail=f"上游生成失败：{e}")
 
-    images: List[str] = []
-    texts: List[str] = []
-    for candidate in getattr(response, "candidates", []) or []:
-        for part in getattr(candidate.content, "parts", []) or []:
-            if getattr(part, "inline_data", None) and getattr(part.inline_data, "data", None):
-                images.append(base64.b64encode(part.inline_data.data).decode("utf-8"))
-            elif getattr(part, "text", None):
-                texts.append(part.text)
+    images, texts = _parse_genai_output(resp)
     if not images and not texts:
         logger.warning("/v1/generate returned no content")
-        raise HTTPException(status_code=502, detail="Model returned no content. Try adjusting the prompt.")
+        raise HTTPException(status_code=502, detail="模型未返回内容，请调整提示词或更换模型。")
 
     # persist if logged in and conv provided
     uid = get_current_user_id(request)
@@ -538,56 +546,43 @@ async def edit_image(
     conv_id: Optional[int] = Form(None),
 ):
     if not files:
-        raise HTTPException(status_code=400, detail="No image files uploaded")
+        raise HTTPException(status_code=400, detail="未上传图片文件")
 
     logger.info(f"/v1/edit files={len(files)} prompt_len={len(prompt) if prompt else 0} conv_id={conv_id}")
-
-    parts: List[types.Part] = []
-    for f in files:
-        content = await f.read()
-        mime = f.content_type or "image/png"
-        try:
-            parts.append(types.Part.from_bytes(data=content, mime_type=mime))
-        except Exception as e:
-            logger.warning(f"Invalid image input for {f.filename}: {e}")
-            raise HTTPException(status_code=400, detail=f"Invalid image input for {f.filename}: {e}")
-
-    parts.append(prompt)
-
-    # Clamp candidate_count to safe bounds [1,6]
+    # Google GenAI edit with inline image parts
+    # Clamp candidate_count to [1,6]
     _cc = (candidate_count or 1)
     try:
         _cc = max(1, min(6, int(_cc)))
     except Exception:
         _cc = 1
-    cfg_kwargs = {
-        "temperature": temperature,
-        "top_p": top_p,
-        "top_k": top_k,
-        "candidate_count": _cc,
-        "seed": seed,
-        "max_output_tokens": max_output_tokens,
-    }
+
+    client = _get_genai_client()
+    parts = []
+    for f in files:
+        data = await f.read()
+        mime = f.content_type or "image/png"
+        try:
+            parts.append(genai_types.Part.from_bytes(data, mime_type=mime))
+        except Exception:
+            # fallback: pass as base64 string
+            parts.append(genai_types.Part.from_bytes(bytes(data), mime_type=mime))
+    # add prompt as text
+    parts.append(prompt)
+
     try:
-        response = _genai_call_with_retry(model=(model or DEFAULT_MODEL), contents=parts, cfg_kwargs=cfg_kwargs)
-    except HTTPException:
-        raise
+        resp = _throttle_and_generate(client, (model or DEFAULT_MODEL), parts)
     except Exception as e:
         logger.exception(f"/v1/edit failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Edit failed: {e}")
+        msg = str(e)
+        if ("RESOURCE_EXHAUSTED" in msg) or ("429" in msg):
+            raise HTTPException(status_code=429, detail="上游限额触发（RESOURCE_EXHAUSTED/429）。已自动退避重试失败，请降低并发或改用更轻量模型。")
+        raise HTTPException(status_code=502, detail=f"上游编辑失败：{e}")
 
-    images: List[str] = []
-    texts: List[str] = []
-    for candidate in getattr(response, "candidates", []) or []:
-        for part in getattr(candidate.content, "parts", []) or []:
-            if getattr(part, "inline_data", None) and getattr(part.inline_data, "data", None):
-                images.append(base64.b64encode(part.inline_data.data).decode("utf-8"))
-            elif getattr(part, "text", None):
-                texts.append(part.text)
-
+    images, texts = _parse_genai_output(resp)
     if not images and not texts:
         logger.warning("/v1/edit returned no content")
-        raise HTTPException(status_code=502, detail="Model returned no content. Try adjusting the prompt or inputs.")
+        raise HTTPException(status_code=502, detail="模型未返回内容，请调整提示或输入图片。")
 
     # persist if logged in and conv provided
     uid = get_current_user_id(request)

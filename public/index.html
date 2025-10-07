@@ -140,6 +140,7 @@
           <option value="gemini-2.5-flash-image-preview">gemini-2.5-flash-image-preview</option>
           <option value="gemini-2.0-flash">gemini-2.0-flash</option>
           <option value="gemini-2.0-pro">gemini-2.0-pro</option>
+          <option value="gemini-1.5-flash">gemini-1.5-flash</option>
         </select>
       </div>
       <div class="setting-item">
@@ -155,16 +156,16 @@
         <input id="top_k" class="input" type="number" placeholder="可选" />
       </div>
       <div class="setting-item">
-        <label>备选数 (candidate_count)</label>
-        <input id="candidate_count" class="input" type="number" placeholder="可选" />
-      </div>
-      <div class="setting-item">
         <label>Seed</label>
         <input id="seed" class="input" type="number" placeholder="可选" />
       </div>
       <div class="setting-item">
         <label>最大输出 Tokens</label>
         <input id="max_output_tokens" class="input" type="number" placeholder="可选" />
+      </div>
+      <div class="setting-item">
+        <label>备选数 (candidate_count)</label>
+        <input id="candidate_count" class="input" type="number" placeholder="可选" />
       </div>
     </aside>
   </div>
@@ -310,7 +311,20 @@
 
       // images
       let images=[];
-      if(Array.isArray(m.images) && m.images.length){ images = m.images.map(x=> (typeof x==='string' && (x.startsWith('http')||x.startsWith('data:'))? x : ('data:image/png;base64,'+x)) ); }
+      if(Array.isArray(m.images) && m.images.length){
+        images = m.images.map(x=>{
+          if(typeof x!== 'string'){ return ''; }
+          const s = x.trim();
+          // Accept absolute URLs, data URLs, and blob URLs for local previews
+          if(s.startsWith('http') || s.startsWith('data:') || s.startsWith('blob:')) return s;
+          // Heuristic MIME detection for base64 payloads
+          let mime = 'image/png';
+          if(s.startsWith('/9j/')) mime = 'image/jpeg'; // JPEG
+          else if(s.startsWith('iVBOR')) mime = 'image/png'; // PNG
+          else if(s.startsWith('R0lG')) mime = 'image/gif'; // GIF
+          return `data:${mime};base64,${s}`;
+        });
+      }
       else if(m.image_url){ images=[m.image_url]; }
       if(images.length>1){
         const grid=document.createElement('div'); grid.className='img-grid';
@@ -391,93 +405,97 @@
         }
       };
     }
+
+    // Settings values display
+    const updateRange=(id,vid)=>{const el=qs('#'+id), ve=qs('#'+vid); const fn=()=>ve.textContent=el.value; el.addEventListener('input',fn); fn();};
+    updateRange('temperature','tempv');
+    updateRange('top_p','top_pv');
+
     // Keyboard send (Enter 发送，Shift+Enter 换行)
-       const promptEl = qs('#prompt');
-       promptEl.addEventListener('keydown',(e)=>{
-         if(e.key==='Enter' && !e.shiftKey && !e.isComposing){
-           e.preventDefault();
-           qs('#send').click();
-           return;
-         }
-         // Shift+Enter 默认换行
-       });
-       // Settings values display
-       const updateRange=(id,vid)=>{const el=qs('#'+id), ve=qs('#'+vid); const fn=()=>ve.textContent=el.value; el.addEventListener('input',fn); fn();};
-       updateRange('temperature','tempv');
-       updateRange('top_p','top_pv');
-       
-       // Sync mini image count with settings candidate_count
-       const imgCountEl = qs('#img-count');
-       const ccEl = qs('#candidate_count');
-       function syncImgCountFromSettings(){ const v = parseInt(ccEl.value||'1'); imgCountEl.value = String(Math.max(1, Math.min(6, isNaN(v)?1:v))); }
-       function syncSettingsFromImgCount(){ ccEl.value = imgCountEl.value; }
-       imgCountEl.addEventListener('change', syncSettingsFromImgCount);
-       ccEl.addEventListener('input', syncImgCountFromSettings);
-       // initialize
-       syncImgCountFromSettings();
-       
-       qs('#send').onclick=async()=>{
-         const prompt=promptEl.value.trim();
-         // 立即清空输入框
-         promptEl.value='';
-         const hasImages = selectedImages.length>0;
-         if(!prompt && !hasImages){toast('请输入提示词或选择图片'); return}
-         if(!currentConv){await newConversation(); if(!currentConv) return;}
-         renderMessage({role:'user',text:prompt});
-         try{
-           if(hasImages){
-             const fd=new FormData();
-             // append all selected images as 'files'
-             selectedImages.forEach(f=> fd.append('files', f));
-             fd.append('prompt', prompt||'');
-             const model=qs('#model').value; if(model) fd.append('model', model);
-             const temperature=qs('#temperature').value; if(temperature) fd.append('temperature', temperature);
-             const top_p=qs('#top_p').value; if(top_p) fd.append('top_p', top_p);
-             const top_k=qs('#top_k').value; if(top_k) fd.append('top_k', top_k);
-             const candidate_count=qs('#candidate_count').value; if(candidate_count) fd.append('candidate_count', candidate_count);
-             const seed=qs('#seed').value; if(seed) fd.append('seed', seed);
-             const max_output_tokens=qs('#max_output_tokens').value; if(max_output_tokens) fd.append('max_output_tokens', max_output_tokens);
-             if(currentConv) fd.append('conv_id', String(currentConv));
-             const r=await fetch(base+'/v1/edit',{method:'POST',credentials:'include',body:fd}); if(!r.ok) throw new Error(await r.text());
-             const j=await r.json();
-             // render assistant
-             if(Array.isArray(j.texts) && j.texts.length){ renderMessage({role:'assistant', texts:j.texts}); }
-             if(Array.isArray(j.images) && j.images.length){ renderMessage({role:'assistant', images: j.images}); }
-             // 发送成功后清空已选择的图片与缩略图
-             selectedImages = [];
-             activeImageIndex = 0;
-             updateThumbs();
-             const fileInput = qs('#file'); if(fileInput) fileInput.value='';
-           }else{
-             // JSON payload aligned with backend schema (no options wrapper)
-             const payload={
-               prompt,
-               model: qs('#model').value || undefined,
-               temperature: qs('#temperature').value? parseFloat(qs('#temperature').value): undefined,
-               top_p: qs('#top_p').value? parseFloat(qs('#top_p').value): undefined,
-               top_k: qs('#top_k').value? parseInt(qs('#top_k').value): undefined,
-               candidate_count: qs('#candidate_count').value? parseInt(qs('#candidate_count').value): undefined,
-               seed: qs('#seed').value? parseInt(qs('#seed').value): undefined,
-               max_output_tokens: qs('#max_output_tokens').value? parseInt(qs('#max_output_tokens').value): undefined,
-               conv_id: currentConv? String(currentConv): undefined
-             };
-             const r=await fetch(base+'/v1/generate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(payload)}); if(!r.ok) throw new Error(await r.text());
-             const j=await r.json();
-             if(Array.isArray(j.texts) && j.texts.length){ renderMessage({role:'assistant', texts:j.texts}); }
-             if(Array.isArray(j.images) && j.images.length){ renderMessage({role:'assistant', images: j.images}); }
-           }
-           // 不再在此处清空输入框（已在点击时清空）
-          }catch(err){ toast('发送失败'); console.error(err); }
-         };
-       // Buttons
-       qs('#login-open').onclick=()=>authDialog.showModal();
-       qs('#login').onclick=()=>loginSignup('login');
-       qs('#signup').onclick=()=>loginSignup('signup');
-       qs('#logout').onclick=async()=>{await fetch(base+'/auth/logout',{method:'POST',credentials:'include'}); await refreshMe();};
-       qs('#new-conv').onclick=newConversation;
-       qs('#refresh-conv').onclick=loadConversations;
-       
-       refreshMe();
-     </script>
+    const promptEl = qs('#prompt');
+    promptEl.addEventListener('keydown',(e)=>{
+      if(e.key==='Enter' && !e.shiftKey && !e.isComposing){
+        e.preventDefault();
+        qs('#send').click();
+        return;
+      }
+      // Shift+Enter 默认换行
+    });
+
+    // Sync mini image count with settings candidate_count
+    const imgCountEl = qs('#img-count');
+    const ccEl = qs('#candidate_count');
+    function syncImgCountFromSettings(){ const v = parseInt(ccEl.value||'1'); imgCountEl.value = String(Math.max(1, Math.min(6, isNaN(v)?1:v))); }
+    function syncSettingsFromImgCount(){ ccEl.value = imgCountEl.value; }
+    imgCountEl.addEventListener('change', syncSettingsFromImgCount);
+    ccEl.addEventListener('input', syncImgCountFromSettings);
+    // initialize
+    syncImgCountFromSettings();
+
+    // Send handler
+    qs('#send').onclick=async()=>{
+      const prompt = promptEl.value.trim();
+      const hasImages = selectedImages.length>0;
+      if(!prompt && !hasImages){toast('请输入提示词或选择图片'); return}
+      if(!currentConv){await newConversation(); if(!currentConv) return;}
+      // 将输入框内容与已选择图片，移动到对话区作为“用户”一侧
+      const previews = selectedImages.map(f=> URL.createObjectURL(f));
+      const userMsg = {role:'user'};
+      if(prompt) userMsg.texts = [prompt];
+      if(previews.length) userMsg.images = previews;
+      renderMessage(userMsg);
+      try{
+        if(hasImages){
+          const fd=new FormData();
+          selectedImages.forEach(f=> fd.append('files', f));
+          fd.append('prompt', prompt||'');
+          const model=qs('#model').value; if(model) fd.append('model', model);
+          const temperature=qs('#temperature').value; if(temperature) fd.append('temperature', temperature);
+          const top_p=qs('#top_p').value; if(top_p) fd.append('top_p', top_p);
+          const top_k=qs('#top_k').value; if(top_k) fd.append('top_k', top_k);
+          const candidate_count=qs('#candidate_count').value; if(candidate_count) fd.append('candidate_count', candidate_count);
+          const seed=qs('#seed').value; if(seed) fd.append('seed', seed);
+          const max_output_tokens=qs('#max_output_tokens').value; if(max_output_tokens) fd.append('max_output_tokens', max_output_tokens);
+          if(currentConv) fd.append('conv_id', String(currentConv));
+          const r=await fetch(base+'/v1/edit',{method:'POST',credentials:'include',body:fd}); if(!r.ok) throw new Error(await r.text());
+          const j=await r.json();
+          if(Array.isArray(j.texts) && j.texts.length){ renderMessage({role:'assistant', texts:j.texts}); }
+          if(Array.isArray(j.images) && j.images.length){ renderMessage({role:'assistant', images: j.images}); }
+          selectedImages = [];
+          activeImageIndex = 0;
+          updateThumbs();
+          const fileInput = qs('#file'); if(fileInput) fileInput.value='';
+        }else{
+          const payload={
+            prompt,
+            model: qs('#model').value || undefined,
+            temperature: qs('#temperature').value? parseFloat(qs('#temperature').value): undefined,
+            top_p: qs('#top_p').value? parseFloat(qs('#top_p').value): undefined,
+            top_k: qs('#top_k').value? parseInt(qs('#top_k').value): undefined,
+            candidate_count: qs('#candidate_count').value? parseInt(qs('#candidate_count').value): undefined,
+            seed: qs('#seed').value? parseInt(qs('#seed').value): undefined,
+            max_output_tokens: qs('#max_output_tokens').value? parseInt(qs('#max_output_tokens').value): undefined,
+            conv_id: currentConv? String(currentConv): undefined
+          };
+          const r=await fetch(base+'/v1/generate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(payload)}); if(!r.ok) throw new Error(await r.text());
+          const j=await r.json();
+          if(Array.isArray(j.texts) && j.texts.length){ renderMessage({role:'assistant', texts:j.texts}); }
+          if(Array.isArray(j.images) && j.images.length){ renderMessage({role:'assistant', images: j.images}); }
+        }
+      }catch(err){ toast('发送失败'); console.error(err); }
+      // 清空输入框
+      promptEl.value='';
+    };
+
+    // Buttons
+    qs('#login-open').onclick=()=>authDialog.showModal();
+    qs('#login').onclick=()=>loginSignup('login');
+    qs('#signup').onclick=()=>loginSignup('signup');
+    qs('#logout').onclick=async()=>{await fetch(base+'/auth/logout',{method:'POST',credentials:'include'}); await refreshMe();};
+    qs('#new-conv').onclick=newConversation;
+    qs('#refresh-conv').onclick=loadConversations;
+
+    refreshMe();
+  </script>
    </body>
    </html>

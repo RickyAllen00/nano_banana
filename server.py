@@ -431,6 +431,17 @@ def _genai_call_with_retry(model: str, contents: List, cfg_kwargs: dict):
             except errors.ClientError as e:
                 status = getattr(e, "status_code", None)
                 msg = str(e)
+                # Map referer restriction errors to a clear 403 for the client
+                if status == 403 and "Requests from referer <empty> are blocked" in msg:
+                    logger.error(f"api_key_restricted_referer model={model} cc={cc} attempt={attempt} msg={msg}")
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "API Key 被设置为 HTTP 引用者（Referrer）限制，服务端调用 Referer 为空被拒绝。"
+                            "请在 Google Cloud Console 或 AI Studio 创建一个仅限制到 Generative Language API、"
+                            "且不设置应用限制（None）的服务端 API Key，并更新服务的 GOOGLE_API_KEY。"
+                        ),
+                    )
                 if status == 429 or "RESOURCE_EXHAUSTED" in msg or "rate" in msg.lower():
                     last_err = e
                     logger.warning(f"upstream_429 model={model} cc={cc} attempt={attempt} msg={msg}")

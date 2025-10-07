@@ -61,6 +61,13 @@
 
 > Render 部署提示：`render.yaml` 的 `healthCheckPath` 已设为 `/health`，与后端路由一致，避免误判不健康导致容器频繁重启。
 
+### 常见错误与修复
+- 403 PERMISSION_DENIED（Requests from referer <empty> are blocked）：
+  - 原因：当前 `GOOGLE_API_KEY`/`GEMINI_API_KEY` 在 Google 控制台设置了“应用限制：HTTP 引用者（Website）”。服务端发起的请求 Referer 为空，会被拒绝。
+  - 处理：在 Google Cloud Console 或 AI Studio 创建一个“应用限制：None”的服务器端 API Key；仅保留“API 限制：Generative Language API”。将该 Key 配置到云端环境变量（Render 仪表盘）。
+- 429 RESOURCE_EXHAUSTED：
+  - 可能由模型的每分钟/每天限额触发，或并发突发导致；建议使用闪系列模型（`gemini-1.5-flash` 或 `gemini-2.0-flash-lite`）、将 `candidate_count=1`，并在云端启用 `GENAI_MAX_CONCURRENT / GENAI_MIN_INTERVAL_MS`。
+
 ## 仅图片生成服务部署与调用
 
 你可以只部署并使用图片生成/编辑接口，而不启用会话或对话功能。当前后端的生成接口不需要登录；只有在提供 `conv_id` 且用户登录时才会写入历史记录。

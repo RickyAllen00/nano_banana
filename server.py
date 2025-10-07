@@ -53,11 +53,23 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(__file__)
 # Allow overriding DB path via environment for cloud persistent disks
 DB_PATH = os.getenv("DB_PATH") or os.path.join(BASE_DIR, "app.db")
+# Ensure DB directory exists and is writable; fallback to /tmp if not
+_parent = os.path.dirname(DB_PATH) or BASE_DIR
+try:
+    os.makedirs(_parent, exist_ok=True)
+    _probe = os.path.join(_parent, ".db_write_probe")
+    with open(_probe, "w") as f:
+        f.write("ok")
+    os.remove(_probe)
+except Exception as e:
+    logging.warning(f"DB dir not writable: {_parent}. Fallback to /tmp/app.db. Reason: {e}")
+    DB_PATH = os.path.join("/tmp", "app.db")
+    os.makedirs("/tmp", exist_ok=True)
 SESSION_COOKIE = "session"
 SESSION_TTL_DAYS = 7
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 

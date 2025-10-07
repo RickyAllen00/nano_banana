@@ -47,9 +47,101 @@
 
 ## 启动 Streamlit 演示
 - 命令：`streamlit run streamlit_app.py`
+
+### 云端部署与配额速率提示
+
+- 若在云端（如 Render）调用出现 `429 RESOURCE_EXHAUSTED`，表示上游模型配额或速率限制。
+- 后端已支持可配置的指数退避重试与错误码映射（环境变量：`GENAI_MAX_RETRIES`, `GENAI_BACKOFF_MS`, `GENAI_FORCE_SINGLE_ON_RETRY`）。
+- 进一步在云端开启服务端限流以规避高并发触发：`GENAI_MAX_CONCURRENT`（默认 2）、`GENAI_MIN_INTERVAL_MS`（默认 300ms）。
+- 可通过设置 `DEFAULT_MODEL` 为更轻量的模型变体、将 `candidate_count` 设为 `1` 来降低开销。
+- 云端请使用与本地相同的 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`，并确保放在服务的环境变量中（不要提交到仓库）。
 - 首次运行会在项目目录创建（或使用）`app.db`。
 - API Key：优先从 `st.secrets['GOOGLE_API_KEY']` 获取，其次读取环境变量 `GOOGLE_API_KEY / GEMINI_API_KEY`。
 - 功能：输入提示词生成图片、保存历史、下载与复制图片到剪贴板。
+
+> Render 部署提示：`render.yaml` 的 `healthCheckPath` 已设为 `/health`，与后端路由一致，避免误判不健康导致容器频繁重启。
+
+## 仅图片生成服务部署与调用
+
+你可以只部署并使用图片生成/编辑接口，而不启用会话或对话功能。当前后端的生成接口不需要登录；只有在提供 `conv_id` 且用户登录时才会写入历史记录。
+
+### 推荐部署（Render）
+- 必填环境变量：`GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）。
+- 可选：`DEFAULT_MODEL`（建议 `gemini-1.5-flash` 或 `gemini-2.0-flash-lite`）。
+- 限流与重试（建议在云端开启）：
+  - `GENAI_MAX_CONCURRENT=1..2`
+  - `GENAI_MIN_INTERVAL_MS=300..500`
+  - `GENAI_MAX_RETRIES=3`、`GENAI_BACKOFF_MS=500`、`GENAI_FORCE_SINGLE_ON_RETRY=1`
+- 挂载磁盘（选）：`DB_PATH=/data/app.db`（若不使用会话/历史可不必严格持久化）。
+
+### HTTP API（仅生成/编辑）
+- `POST /v1/generate`（JSON）：
+  - Body：`{ prompt, model?, temperature?, top_p?, top_k?, candidate_count?, seed?, max_output_tokens? }`
+  - 返回：`{ images: [base64 PNG], texts: [string] }`
+  - 说明：`candidate_count` 会被限制在 `1..6`；不需要认证。
+- `POST /v1/edit`（multipart/form-data）：
+  - 字段：`prompt`、`files`（1 张或多张图片）、以及可选生成参数。
+  - 返回：`{ images: [base64 PNG], texts: [string] }`
+  - 说明：不需要认证；仅在提供 `conv_id` 且登录时才持久化。
+
+### curl 示例
+
+```bash
+# 生成（单次）
+curl -X POST "https://<your-render-domain>/v1/generate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "a yellow banana wearing sunglasses, 4k, photorealistic",
+    "model": "gemini-1.5-flash",
+    "candidate_count": 1
+  }'
+
+# 编辑（上传图片 + 文本提示）
+curl -X POST "https://<your-render-domain>/v1/edit" \
+  -H "Accept: application/json" \
+  -F "prompt=make the banana purple with neon glow" \
+  -F "model=gemini-1.5-flash" \
+  -F "files=@./banana.png;type=image/png"
+```
+
+### Python 客户端示例
+
+```python
+import requests
+
+BASE = "https://<your-render-domain>"
+
+def generate(prompt: str, model="gemini-1.5-flash"):
+    r = requests.post(f"{BASE}/v1/generate", json={
+        "prompt": prompt,
+        "model": model,
+        "candidate_count": 1,
+    }, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    # 取第一张图片（base64 PNG）
+    if data.get("images"):
+        img_b64 = data["images"][0]
+        with open("out.png", "wb") as f:
+            import base64
+            f.write(base64.b64decode(img_b64))
+    return data
+
+def edit(prompt: str, img_path: str, model="gemini-1.5-flash"):
+    with open(img_path, "rb") as fp:
+        files = {"files": ("image.png", fp, "image/png")}
+        data = {"prompt": prompt, "model": model}
+        r = requests.post(f"{BASE}/v1/edit", files=files, data=data, timeout=120)
+        r.raise_for_status()
+        return r.json()
+
+print(generate("a minimal banana logo in flat style"))
+```
+
+### 生产建议
+- 显式设置 `DEFAULT_MODEL` 为闪系列，控制 `candidate_count=1` 初始验证。
+- 在云端启用上述限流与重试环境变量，降低突发并发导致的 429 概率。
+- 无需会话/历史时，不传 `conv_id`；认证端点与会话端点可忽略。
 
 ## 独立脚本示例（nano_api.py）
 - 命令：`python nano_api.py`

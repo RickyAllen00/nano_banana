@@ -6,7 +6,7 @@ services:
     plan: free
     region: oregon
     runtime: docker
-    healthCheckPath: /healthz
+    healthCheckPath: /health
     # Persistent disk for SQLite database
     disk:
       name: data
@@ -17,5 +17,17 @@ services:
         sync: false
       - key: DB_PATH
         value: /data/app.db
+      - key: DEFAULT_MODEL
+        sync: false
+      - key: GENAI_MAX_RETRIES
+        sync: false
+      - key: GENAI_BACKOFF_MS
+        sync: false
+      - key: GENAI_FORCE_SINGLE_ON_RETRY
+        sync: false
+      - key: GENAI_MAX_CONCURRENT
+        sync: false
+      - key: GENAI_MIN_INTERVAL_MS
+        sync: false
       # When serving /public directly from FastAPI, CORS often isn't required.
       # If you need cross-origin calls, set your Streamlit domain via ALLOWED_ORIGINS in dashboard.

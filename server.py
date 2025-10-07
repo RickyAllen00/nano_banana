@@ -16,8 +16,9 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Res
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 from fastapi.responses import FileResponse
+from threading import Semaphore, Lock
 
 # Load environment variables
 load_dotenv()
@@ -194,7 +195,17 @@ def get_current_user_id(request: Request) -> Optional[int]:
 # =====================
 # API Schemas
 # =====================
-DEFAULT_MODEL = "gemini-2.5-flash-image-preview"
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL") or "gemini-2.5-flash-image-preview"
+GENAI_MAX_RETRIES = int(os.getenv("GENAI_MAX_RETRIES", "2"))
+GENAI_BACKOFF_MS = int(os.getenv("GENAI_BACKOFF_MS", "250"))
+GENAI_FORCE_SINGLE_ON_RETRY = os.getenv("GENAI_FORCE_SINGLE_ON_RETRY", "1") == "1"
+GENAI_MAX_CONCURRENT = int(os.getenv("GENAI_MAX_CONCURRENT", "2"))
+GENAI_MIN_INTERVAL_MS = int(os.getenv("GENAI_MIN_INTERVAL_MS", "300"))
+
+# Simple process-wide throttle to avoid tripping upstream rate limits under cloud concurrency
+_throttle_sem = Semaphore(GENAI_MAX_CONCURRENT)
+_ts_lock = Lock()
+_last_call_ts = 0.0
 
 class GenerateRequest(BaseModel):
     prompt: str
@@ -379,6 +390,69 @@ def _record_turn(conv_id: int, type_: str, prompt: str, images: List[str], texts
             (conv_id, type_, json.dumps(images or []), json.dumps(texts or []), json.dumps(params or {}), now),
         )
 
+def _genai_call_with_retry(model: str, contents: List, cfg_kwargs: dict):
+    cc = cfg_kwargs.get("candidate_count") or 1
+    attempt = 0
+    last_err: Optional[Exception] = None
+    retry_after_s = max(1, int((GENAI_BACKOFF_MS / 1000.0) * (2 ** max(0, GENAI_MAX_RETRIES - 1))))
+
+    # Acquire concurrency gate
+    acquired = _throttle_sem.acquire(timeout=30)
+    if not acquired:
+        logger.warning(f"throttle_sem_timeout model={model} cc={cc}")
+        raise HTTPException(status_code=429, detail="服务端限流触发，请稍后重试。", headers={"Retry-After": str(retry_after_s)})
+    try:
+        # Respect minimal interval between upstream calls
+        with _ts_lock:
+            now = time.monotonic()
+            min_gap = GENAI_MIN_INTERVAL_MS / 1000.0
+            wait_s = max(0.0, min_gap - (now - _last_call_ts))
+        if wait_s > 0:
+            time.sleep(wait_s)
+        with _ts_lock:
+            # Update last call timestamp just before making upstream call
+            globals()["_last_call_ts"] = time.monotonic()
+
+        while attempt <= GENAI_MAX_RETRIES:
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        temperature=cfg_kwargs.get("temperature"),
+                        top_p=cfg_kwargs.get("top_p"),
+                        top_k=cfg_kwargs.get("top_k"),
+                        candidate_count=cc,
+                        seed=cfg_kwargs.get("seed"),
+                        max_output_tokens=cfg_kwargs.get("max_output_tokens"),
+                    ),
+                )
+                return resp
+            except errors.ClientError as e:
+                status = getattr(e, "status_code", None)
+                msg = str(e)
+                if status == 429 or "RESOURCE_EXHAUSTED" in msg or "rate" in msg.lower():
+                    last_err = e
+                    logger.warning(f"upstream_429 model={model} cc={cc} attempt={attempt} msg={msg}")
+                    if attempt == GENAI_MAX_RETRIES:
+                        break
+                    backoff = (GENAI_BACKOFF_MS / 1000.0) * (2 ** attempt)
+                    time.sleep(backoff)
+                    if GENAI_FORCE_SINGLE_ON_RETRY and cc > 1:
+                        cc = 1
+                    attempt += 1
+                    continue
+                else:
+                    raise
+            except Exception as e:
+                last_err = e
+                logger.exception(f"upstream_call_failed model={model} cc={cc} attempt={attempt}: {e}")
+                break
+    finally:
+        _throttle_sem.release()
+
+    raise HTTPException(status_code=429, detail=f"上游配额或速率限制：{last_err}", headers={"Retry-After": str(retry_after_s)})
+
 @app.post("/v1/generate", response_model=GenerateResponse)
 async def generate_image(payload: GenerateRequest, request: Request):
     model = payload.model or DEFAULT_MODEL
@@ -389,19 +463,19 @@ async def generate_image(payload: GenerateRequest, request: Request):
         cc = max(1, min(6, int(cc)))
     except Exception:
         cc = 1
+    cfg_kwargs = {
+        "temperature": payload.temperature,
+        "top_p": payload.top_p,
+        "top_k": payload.top_k,
+        "candidate_count": cc,
+        "seed": payload.seed,
+        "max_output_tokens": payload.max_output_tokens,
+    }
     try:
-        response = client.models.generate_content(
-            model=model,
-            contents=[payload.prompt],
-            config=types.GenerateContentConfig(
-                temperature=payload.temperature,
-                top_p=payload.top_p,
-                top_k=payload.top_k,
-                candidate_count=cc,
-                seed=payload.seed,
-                max_output_tokens=payload.max_output_tokens,
-            ),
-        )
+        response = _genai_call_with_retry(model=model, contents=[payload.prompt], cfg_kwargs=cfg_kwargs)
+    except HTTPException:
+        # Already mapped (e.g., 429)
+        raise
     except Exception as e:
         logger.exception(f"/v1/generate failed: {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
@@ -469,25 +543,24 @@ async def edit_image(
 
     parts.append(prompt)
 
+    # Clamp candidate_count to safe bounds [1,6]
+    _cc = (candidate_count or 1)
     try:
-        # Clamp candidate_count to safe bounds [1,6]
-        _cc = (candidate_count or 1)
-        try:
-            _cc = max(1, min(6, int(_cc)))
-        except Exception:
-            _cc = 1
-        response = client.models.generate_content(
-            model=(model or DEFAULT_MODEL),
-            contents=parts,
-            config=types.GenerateContentConfig(
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                candidate_count=_cc,
-                seed=seed,
-                max_output_tokens=max_output_tokens,
-            ),
-        )
+        _cc = max(1, min(6, int(_cc)))
+    except Exception:
+        _cc = 1
+    cfg_kwargs = {
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "candidate_count": _cc,
+        "seed": seed,
+        "max_output_tokens": max_output_tokens,
+    }
+    try:
+        response = _genai_call_with_retry(model=(model or DEFAULT_MODEL), contents=parts, cfg_kwargs=cfg_kwargs)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"/v1/edit failed: {e}")
         raise HTTPException(status_code=500, detail=f"Edit failed: {e}")

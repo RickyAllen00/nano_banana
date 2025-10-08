@@ -117,17 +117,6 @@
         <div class="send-group">
           <button id="send" class="btn accent">发送</button>
           <div class="send-tip">Enter 发送，Shift+Enter 换行</div>
-          <div class="send-extra">
-            <label for="img-count">张数</label>
-            <select id="img-count">
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-              <option value="5">5</option>
-              <option value="6">6</option>
-            </select>
-          </div>
         </div>
       </div>
     </main>
@@ -146,26 +135,17 @@
       <div class="setting-item">
         <label>Temperature</label>
         <div class="inline"><input id="temperature" type="range" min="0" max="2" step="0.1" /><span class="muted" id="tempv"></span></div>
+        <div class="muted small">越大越随机，画风更发散；建议 0.6–1.2</div>
       </div>
       <div class="setting-item">
         <label>Top P</label>
         <div class="inline"><input id="top_p" type="range" min="0" max="1" step="0.05" /><span class="muted" id="top_pv"></span></div>
+        <div class="muted small">核采样比例，越小越保守；建议 0.5–0.9</div>
       </div>
       <div class="setting-item">
         <label>Top K</label>
         <input id="top_k" class="input" type="number" placeholder="可选" />
-      </div>
-      <div class="setting-item">
-        <label>Seed</label>
-        <input id="seed" class="input" type="number" placeholder="可选" />
-      </div>
-      <div class="setting-item">
-        <label>最大输出 Tokens</label>
-        <input id="max_output_tokens" class="input" type="number" placeholder="可选" />
-      </div>
-      <div class="setting-item">
-        <label>备选数 (candidate_count)</label>
-        <input id="candidate_count" class="input" type="number" placeholder="可选" />
+        <div class="muted small">考虑的候选项个数，越大越发散；建议 20–100</div>
       </div>
     </aside>
   </div>
@@ -422,49 +402,48 @@
       // Shift+Enter 默认换行
     });
 
-    // Sync mini image count with settings candidate_count
-    const imgCountEl = qs('#img-count');
-    const ccEl = qs('#candidate_count');
-    function syncImgCountFromSettings(){ const v = parseInt(ccEl.value||'1'); imgCountEl.value = String(Math.max(1, Math.min(6, isNaN(v)?1:v))); }
-    function syncSettingsFromImgCount(){ ccEl.value = imgCountEl.value; }
-    imgCountEl.addEventListener('change', syncSettingsFromImgCount);
-    ccEl.addEventListener('input', syncImgCountFromSettings);
-    // initialize
-    syncImgCountFromSettings();
+    // 已移除“张数”选择与 candidate_count 设置项（无实际作用）
 
     // Send handler
     qs('#send').onclick=async()=>{
       const prompt = promptEl.value.trim();
       const hasImages = selectedImages.length>0;
       if(!prompt && !hasImages){toast('请输入提示词或选择图片'); return}
-      if(!currentConv){await newConversation(); if(!currentConv) return;}
+      // 登录状态下才尝试创建会话；未登录时允许直接生成（不带 conv_id）
+      if(!currentConv){
+        try{ await newConversation(); }catch(e){}
+      }
       // 将输入框内容与已选择图片，移动到对话区作为“用户”一侧
       const previews = selectedImages.map(f=> URL.createObjectURL(f));
       const userMsg = {role:'user'};
       if(prompt) userMsg.texts = [prompt];
       if(previews.length) userMsg.images = previews;
       renderMessage(userMsg);
+
+      // 立即清空输入与已选图片（避免等待网络返回）
+      const filesToSend = hasImages ? [...selectedImages] : [];
+      selectedImages = [];
+      activeImageIndex = 0;
+      updateThumbs();
+      const fileInput = qs('#file'); if(fileInput) fileInput.value='';
+      promptEl.value='';
+
       try{
         if(hasImages){
           const fd=new FormData();
-          selectedImages.forEach(f=> fd.append('files', f));
+          filesToSend.forEach(f=> fd.append('files', f));
           fd.append('prompt', prompt||'');
           const model=qs('#model').value; if(model) fd.append('model', model);
           const temperature=qs('#temperature').value; if(temperature) fd.append('temperature', temperature);
           const top_p=qs('#top_p').value; if(top_p) fd.append('top_p', top_p);
           const top_k=qs('#top_k').value; if(top_k) fd.append('top_k', top_k);
-          const candidate_count=qs('#candidate_count').value; if(candidate_count) fd.append('candidate_count', candidate_count);
-          const seed=qs('#seed').value; if(seed) fd.append('seed', seed);
-          const max_output_tokens=qs('#max_output_tokens').value; if(max_output_tokens) fd.append('max_output_tokens', max_output_tokens);
           if(currentConv) fd.append('conv_id', String(currentConv));
           const r=await fetch(base+'/v1/edit',{method:'POST',credentials:'include',body:fd}); if(!r.ok) throw new Error(await r.text());
           const j=await r.json();
-          if(Array.isArray(j.texts) && j.texts.length){ renderMessage({role:'assistant', texts:j.texts}); }
-          if(Array.isArray(j.images) && j.images.length){ renderMessage({role:'assistant', images: j.images}); }
-          selectedImages = [];
-          activeImageIndex = 0;
-          updateThumbs();
-          const fileInput = qs('#file'); if(fileInput) fileInput.value='';
+          const respMsg = {role:'assistant'};
+          if(Array.isArray(j.texts) && j.texts.length) respMsg.texts = j.texts;
+          if(Array.isArray(j.images) && j.images.length) respMsg.images = j.images;
+          renderMessage(respMsg);
         }else{
           const payload={
             prompt,
@@ -472,19 +451,16 @@
             temperature: qs('#temperature').value? parseFloat(qs('#temperature').value): undefined,
             top_p: qs('#top_p').value? parseFloat(qs('#top_p').value): undefined,
             top_k: qs('#top_k').value? parseInt(qs('#top_k').value): undefined,
-            candidate_count: qs('#candidate_count').value? parseInt(qs('#candidate_count').value): undefined,
-            seed: qs('#seed').value? parseInt(qs('#seed').value): undefined,
-            max_output_tokens: qs('#max_output_tokens').value? parseInt(qs('#max_output_tokens').value): undefined,
             conv_id: currentConv? String(currentConv): undefined
           };
           const r=await fetch(base+'/v1/generate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(payload)}); if(!r.ok) throw new Error(await r.text());
           const j=await r.json();
-          if(Array.isArray(j.texts) && j.texts.length){ renderMessage({role:'assistant', texts:j.texts}); }
-          if(Array.isArray(j.images) && j.images.length){ renderMessage({role:'assistant', images: j.images}); }
+          const respMsg = {role:'assistant'};
+          if(Array.isArray(j.texts) && j.texts.length) respMsg.texts = j.texts;
+          if(Array.isArray(j.images) && j.images.length) respMsg.images = j.images;
+          renderMessage(respMsg);
         }
       }catch(err){ toast('发送失败'); console.error(err); }
-      // 清空输入框
-      promptEl.value='';
     };
 
     // Buttons

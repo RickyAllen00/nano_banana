@@ -214,9 +214,6 @@ class GenerateRequest(BaseModel):
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
-    candidate_count: Optional[int] = None
-    seed: Optional[int] = None
-    max_output_tokens: Optional[int] = None
     # conversation
     conv_id: Optional[int] = None
 
@@ -234,7 +231,16 @@ async def index_page():
     index_path = os.path.join(os.path.dirname(__file__), "public", "index.html")
     if not os.path.exists(index_path):
         raise HTTPException(status_code=404, detail="Frontend not found")
-    return FileResponse(index_path)
+    # Return index with cache disabled to avoid stale UI after redeploy
+    response = FileResponse(index_path)
+    try:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    except Exception:
+        # Headers setting is best-effort; page will still be served
+        pass
+    return response
 
 # Diagnostics endpoint to verify environment loading
 @app.get("/_diag/env")
@@ -441,7 +447,7 @@ def _parse_genai_output(resp) -> (List[str], List[str]):
         pass
     return images, texts
 
-def _throttle_and_generate(client: genai.Client, model: str, contents: List):
+def _throttle_and_generate(client: genai.Client, model: str, contents: List, gen_config: Optional[genai_types.GenerationConfig] = None):
     """Serialize upstream calls with simple process-level throttling and retry on 429.
 
     - Enforces GENAI_MAX_CONCURRENT via semaphore.
@@ -463,6 +469,7 @@ def _throttle_and_generate(client: genai.Client, model: str, contents: List):
         backoff_base = GENAI_BACKOFF_MS / 1000.0
         while True:
             try:
+                # 兼容 google-genai==0.2.0：不传递 generation_config，避免参数不兼容报错
                 return client.models.generate_content(
                     model=model,
                     contents=contents,
@@ -488,17 +495,26 @@ async def generate_image(payload: GenerateRequest, request: Request):
     model = payload.model or DEFAULT_MODEL
     logger.info(f"/v1/generate model={model} conv_id={payload.conv_id}")
 
-    # Clamp candidate_count to [1,6]
-    cc = (payload.candidate_count or 1)
-    try:
-        cc = max(1, min(6, int(cc)))
-    except Exception:
-        cc = 1
-
     # Google GenAI generate
     client = _get_genai_client()
     try:
-        resp = _throttle_and_generate(client, model, [payload.prompt])
+        # Build generation_config with only provided fields
+        gen_config = None
+        if (payload.temperature is not None) or (payload.top_p is not None) or (payload.top_k is not None):
+            try:
+                gen_config = genai_types.GenerationConfig(
+                    temperature=payload.temperature,
+                    top_p=payload.top_p,
+                    top_k=payload.top_k,
+                )
+            except Exception:
+                # Fallback to dict if type construction fails
+                gen_config = {
+                    "temperature": payload.temperature,
+                    "top_p": payload.top_p,
+                    "top_k": payload.top_k,
+                }
+        resp = _throttle_and_generate(client, model, [payload.prompt], gen_config)
     except Exception as e:
         logger.exception(f"/v1/generate failed: {e}")
         msg = str(e)
@@ -521,9 +537,6 @@ async def generate_image(payload: GenerateRequest, request: Request):
                     "temperature": payload.temperature,
                     "top_p": payload.top_p,
                     "top_k": payload.top_k,
-                    "candidate_count": payload.candidate_count,
-                    "seed": payload.seed,
-                    "max_output_tokens": payload.max_output_tokens,
                     "model": model,
                 }
                 _record_turn(payload.conv_id, "generate", payload.prompt, images, texts, params)
@@ -540,9 +553,6 @@ async def edit_image(
     temperature: Optional[float] = Form(None),
     top_p: Optional[float] = Form(None),
     top_k: Optional[int] = Form(None),
-    candidate_count: Optional[int] = Form(None),
-    seed: Optional[int] = Form(None),
-    max_output_tokens: Optional[int] = Form(None),
     conv_id: Optional[int] = Form(None),
 ):
     if not files:
@@ -550,12 +560,6 @@ async def edit_image(
 
     logger.info(f"/v1/edit files={len(files)} prompt_len={len(prompt) if prompt else 0} conv_id={conv_id}")
     # Google GenAI edit with inline image parts
-    # Clamp candidate_count to [1,6]
-    _cc = (candidate_count or 1)
-    try:
-        _cc = max(1, min(6, int(_cc)))
-    except Exception:
-        _cc = 1
 
     client = _get_genai_client()
     parts = []
@@ -571,7 +575,21 @@ async def edit_image(
     parts.append(prompt)
 
     try:
-        resp = _throttle_and_generate(client, (model or DEFAULT_MODEL), parts)
+        gen_config = None
+        if (temperature is not None) or (top_p is not None) or (top_k is not None):
+            try:
+                gen_config = genai_types.GenerationConfig(
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                )
+            except Exception:
+                gen_config = {
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "top_k": top_k,
+                }
+        resp = _throttle_and_generate(client, (model or DEFAULT_MODEL), parts, gen_config)
     except Exception as e:
         logger.exception(f"/v1/edit failed: {e}")
         msg = str(e)
@@ -590,9 +608,6 @@ async def edit_image(
         "temperature": temperature,
         "top_p": top_p,
         "top_k": top_k,
-        "candidate_count": candidate_count,
-        "seed": seed,
-        "max_output_tokens": max_output_tokens,
         "model": model,
     }
     if uid and conv_id:
